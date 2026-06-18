@@ -34,6 +34,61 @@ export const c = {
   bold: "\x1b[1m",
 };
 
+// 24 visually-distinct 256-color codes for app name coloring.
+// Picks widely-spaced hues across the color wheel to minimize collisions
+// among typical small sets of app names (3-15 apps).
+const APP_PALETTE = [
+  "\x1b[38;5;39m",  // bright sky blue
+  "\x1b[38;5;208m", // bright orange
+  "\x1b[38;5;170m", // pink/magenta
+  "\x1b[38;5;46m",  // bright green
+  "\x1b[38;5;220m", // yellow
+  "\x1b[38;5;51m",  // cyan
+  "\x1b[38;5;201m", // hot pink
+  "\x1b[38;5;215m", // peach
+  "\x1b[38;5;75m",  // light blue
+  "\x1b[38;5;118m", // lime
+  "\x1b[38;5;141m", // purple
+  "\x1b[38;5;209m", // salmon
+  "\x1b[38;5;33m",  // royal blue
+  "\x1b[38;5;130m", // dark orange
+  "\x1b[38;5;99m",  // lavender purple
+  "\x1b[38;5;82m",  // spring green
+  "\x1b[38;5;228m", // pale yellow
+  "\x1b[38;5;87m",  // teal
+  "\x1b[38;5;211m", // light pink
+  "\x1b[38;5;180m", // tan
+  "\x1b[38;5;111m", // steel blue
+  "\x1b[38;5;155m", // mint
+  "\x1b[38;5;164m", // mauve
+  "\x1b[38;5;173m", // dusty rose
+];
+
+const colorCache = new Map<string, string>();
+
+/**
+ * Deterministic, distinct ANSI color per app name (hash → palette index).
+ * Same name always gets the same color across runs.
+ */
+export function colorFor(name: string): string {
+  const cached = colorCache.get(name);
+  if (cached) return cached;
+  let h = 5381;
+  for (let i = 0; i < name.length; i++) {
+    h = ((h << 5) + h + name.charCodeAt(i)) >>> 0;
+  }
+  const color = APP_PALETTE[h % APP_PALETTE.length] ?? c.cyan;
+  colorCache.set(name, color);
+  return color;
+}
+
+/** Build a tag like [be:api] where 'api' is colored per-name and 'be' is dim. */
+export function appTag(prefix: "be" | "fe", name: string): string {
+  const side = `${c.dim}${prefix}${c.reset}`;
+  const colored = `${colorFor(name)}${name}${c.reset}`;
+  return `${c.dim}[${c.reset}${side}${c.dim}:${c.reset}${colored}${c.dim}]${c.reset}`;
+}
+
 export const log = {
   info: (msg: string) => console.log(`${c.blue}info${c.reset}  ${msg}`),
   ok: (msg: string) => console.log(`${c.green}done${c.reset}  ${msg}`),
@@ -79,6 +134,30 @@ export const KIND_APPS_DIR: Record<AppKind, string> = {
 
 export function kindLabel(k: AppKind): string {
   return k === "backend" ? "BE" : "FE";
+}
+
+/**
+ * Returns true if `full` is a real directory OR a symlink pointing to a directory.
+ * Cross-platform — on Windows, Dirent.isDirectory() returns false for symlinks,
+ * so we must `lstat` then `stat` the target.
+ */
+export async function isAppDir(full: string): Promise<boolean> {
+  const { lstat, stat } = await import("node:fs/promises");
+  try {
+    const ls = await lstat(full);
+    if (ls.isDirectory()) return true;
+    if (ls.isSymbolicLink()) {
+      try {
+        const target = await stat(full);
+        return target.isDirectory();
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 const VALID_PM: PackageManager[] = ["bun", "yarn", "npm", "pnpm"];

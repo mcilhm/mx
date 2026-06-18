@@ -21,6 +21,15 @@ import { graph } from "./commands/graph";
 import { envDiff } from "./commands/envdiff";
 import { audit } from "./commands/audit";
 import { outdated } from "./commands/outdated";
+import { importApps } from "./commands/import";
+import {
+  monitorLs,
+  monitorPs,
+  monitorHealth,
+  monitorTail,
+  monitorStop,
+  monitorLogsList,
+} from "./commands/monitor";
 import { promptChoice } from "./utils";
 
 const program = new Command();
@@ -232,6 +241,53 @@ program
     return envDiff(kind, a, b);
   });
 
+const monitorCmd = program
+  .command("monitor")
+  .description("Inspect running apps (use `mx stop` to kill them)");
+
+monitorCmd
+  .command("ls")
+  .description("List running apps with status, pid, port, uptime")
+  .action(monitorLs);
+
+monitorCmd
+  .command("ps")
+  .description("Detailed process info (CPU, memory, uptime)")
+  .action(monitorPs);
+
+monitorCmd
+  .command("health")
+  .description("HTTP health probe each running app (GET /health)")
+  .action(monitorHealth);
+
+monitorCmd
+  .command("tail")
+  .description("Combined log tail across all tracked apps")
+  .option("-f, --follow", "follow log output")
+  .option("-n, --lines <n>", "initial lines per app", "30")
+  .action((opts) => monitorTail({ follow: opts.follow, lines: parseInt(opts.lines, 10) }));
+
+monitorCmd
+  .command("logs")
+  .description("List all log files")
+  .action(monitorLogsList);
+
+// Top-level `mx stop` for killing running apps
+program
+  .command("stop [target] [name]")
+  .description("Stop a running app: mx stop <be|fe> <name> | mx stop <pid> | mx stop all")
+  .option("--all", "stop everything discovered in this monorepo")
+  .option("-f, --force", "skip confirmation prompt")
+  .action((target, name, opts) => monitorStop(target, name, { all: opts.all, force: opts.force }));
+
+program
+  .command("import <source-dir>")
+  .description("Import existing apps from a non-mx folder via symlink")
+  .option("--kind <kind>", "force classification: be | fe")
+  .option("--all", "include 'unknown' classifications too")
+  .option("-f, --force", "skip confirmation prompt")
+  .action((sourceDir, opts) => importApps(sourceDir, { kind: opts.kind, all: opts.all, force: opts.force }));
+
 program
   .command("exec <kind> <name> [args...]")
   .description("Run a command (or package.json script) inside an app: mx exec be api -- bun test")
@@ -261,18 +317,21 @@ runCmd
   .command("be <name> <script>")
   .description("Run a backend app script")
   .option("--log", "also write output to .mx/logs/<prefix>-<name>.log")
+  .option("-w, --watch", "spawn in background (detached) and return immediately")
   .action((name, script, opts) => run("be", name, script, opts));
 
 runCmd
   .command("fe <name> <script>")
   .description("Run a frontend app script")
   .option("--log", "also write output to .mx/logs/<prefix>-<name>.log")
+  .option("-w, --watch", "spawn in background (detached) and return immediately")
   .action((name, script, opts) => run("fe", name, script, opts));
 
 runCmd
   .command("all <script>")
   .description("Run the script across ALL BE + FE apps in parallel")
   .option("--log", "also write output to .mx/logs/<prefix>-<name>.log per app")
+  .option("-w, --watch", "spawn all in background (detached) and return immediately")
   .action((script, opts) => run("all", "", script, opts));
 
 program.parseAsync(process.argv).catch((err) => {

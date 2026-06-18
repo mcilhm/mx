@@ -1,4 +1,4 @@
-import { exists, log, pathJoin, ROOT, AppKind, KIND_APPS_DIR, kindLabel } from "../utils";
+import { exists, log, pathJoin, ROOT, AppKind, KIND_APPS_DIR, kindLabel, c, colorFor, isAppDir } from "../utils";
 import { readdir, readFile } from "node:fs/promises";
 
 type AppInfo = {
@@ -25,9 +25,10 @@ const c = {
 async function collect(kind: AppKind): Promise<AppInfo[]> {
   const base = pathJoin(ROOT, KIND_APPS_DIR[kind]);
   if (!exists(base)) return [];
-  const dirs = (await readdir(base, { withFileTypes: true })).filter((d) => d.isDirectory());
+  const entries = await readdir(base, { withFileTypes: true });
   const out: AppInfo[] = [];
-  for (const d of dirs) {
+  for (const d of entries) {
+    if (!(await isAppDir(pathJoin(base, d.name)))) continue;
     const dir = pathJoin(base, d.name);
     const pkgPath = pathJoin(dir, "package.json");
     let version: string | undefined;
@@ -73,15 +74,16 @@ export async function list(opts: { json?: boolean } = {}) {
   );
 
   const tag = (kind: AppKind) =>
-    kind === "backend" ? `${c.cyan}BE   ${c.reset}` : `${c.magenta}FE   ${c.reset}`;
+    kind === "backend" ? `${c.dim}BE   ${c.reset}` : `${c.dim}FE   ${c.reset}`;
 
   for (const a of [...bes, ...fes]) {
     const portStr = a.port ? String(a.port) : `${c.dim}-${c.reset}`;
     const envStr = a.hasEnv ? `${c.green}yes${c.reset}` : `${c.dim}no${c.reset}`;
     const scripts = a.scripts.length ? a.scripts.join(", ") : `${c.dim}-${c.reset}`;
     const pathLabel = `${KIND_APPS_DIR[a.kind]}/`;
+    const nameColored = `${colorFor(a.name)}${c.bold}${a.name.padEnd(18)}${c.reset}`;
     rows.push(
-      `${tag(a.kind)} ${c.dim}${pathLabel.padEnd(22)}${c.reset} ${c.bold}${a.name.padEnd(18)}${c.reset} ${portStr.padEnd(6 + 9)} ${envStr.padEnd(4 + 9)} ${scripts}`
+      `${tag(a.kind)} ${c.dim}${pathLabel.padEnd(22)}${c.reset} ${nameColored} ${portStr.padEnd(6 + 9)} ${envStr.padEnd(4 + 9)} ${scripts}`
     );
   }
 

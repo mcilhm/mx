@@ -10,6 +10,7 @@ import {
   ensureDir,
   loadPm,
   pmRunArgs,
+  appTag,
 } from "../utils";
 import { readdir, readFile } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
@@ -18,6 +19,7 @@ const LOGS_DIR = pathJoin(ROOT, ".mx/logs");
 
 export interface RunOpts {
   log?: boolean;
+  watch?: boolean;
 }
 
 async function ensureLogsDir() {
@@ -86,6 +88,39 @@ export async function run(kind: Kind, name: string, script: string, opts: RunOpt
   const fileEnv = await loadEnv(dir);
   const args = runArgs(pm, script);
   log.info(`$ ${pm} ${args.join(" ")}  (in ${KIND_APPS_DIR[appKind(prefix)]}/${name})`);
+
+  // --watch: spawn detached, write to log, register, return immediately
+  if (opts.watch) {
+    await ensureLogsDir();
+    const logPath = pathJoin(LOGS_DIR, `${prefix}-${name}.log`);
+    const proc = spawnWatched([pm, ...args], dir, logPath, { ...mergeEnv(fileEnv), FORCE_COLOR: "1" });
+
+    let port: number | undefined;
+    try {
+      const pkg = JSON.parse(await readFile(pathJoin(dir, "package.json"), "utf8"));
+      const m = JSON.stringify(pkg.scripts ?? {}).match(/--port\s+(\d+)/);
+      if (m) port = parseInt(m[1], 10);
+      else if (fileEnv.PORT) port = parseInt(fileEnv.PORT, 10);
+      else if (process.env.PORT) port = parseInt(process.env.PORT, 10);
+    } catch {}
+
+    try {
+      const { register } = await import("./monitor");
+      await register({
+        prefix, name, pid: proc.pid,
+        logFile: logPath, port, script,
+        startedAt: new Date().toISOString(),
+        cwd: dir,
+      });
+    } catch {}
+
+    log.ok(`watching ${prefix}:${name} (pid=${proc.pid}) in background`);
+    log.info(`  log:    mx logs ${prefix} ${name} -f`);
+    log.info(`  list:   mx monitor ls`);
+    log.info(`  stop:   mx stop ${prefix} ${name}`);
+    return;
+  }
+
   if (opts.log) {
     await ensureLogsDir();
     const logPath = pathJoin(LOGS_DIR, `${prefix}-${name}.log`);
@@ -97,6 +132,7 @@ export async function run(kind: Kind, name: string, script: string, opts: RunOpt
     stdio: stdout,
     env: { ...mergeEnv(fileEnv), FORCE_COLOR: "1" },
   });
+
   if (opts.log) {
     await ensureLogsDir();
     const logPath = pathJoin(LOGS_DIR, `${prefix}-${name}.log`);
@@ -123,8 +159,44 @@ export async function run(kind: Kind, name: string, script: string, opts: RunOpt
     };
     tee(proc.stdout);
     tee(proc.stderr);
+
+    // Register in monitor registry
+    const { register, unregister } = await import("./monitor");
+    let port: number | undefined;
+    try {
+      const pkg = JSON.parse(await readFile(pathJoin(dir, "package.json"), "utf8"));
+      const m = JSON.stringify(pkg.scripts ?? {}).match(/--port\s+(\d+)/);
+      if (m) port = parseInt(m[1], 10);
+      else if (fileEnv.PORT) port = parseInt(fileEnv.PORT, 10);
+      else if (process.env.PORT) port = parseInt(process.env.PORT, 10);
+    } catch {}
+    await register({
+      prefix,
+      name,
+      pid: proc.pid,
+      logFile: logPath,
+      port,
+      script,
+      startedAt: new Date().toISOString(),
+      cwd: dir,
+    });
+    log.info(`registered in monitor (pid=${proc.pid}). Try: mx monitor ls`);
+    process.on("SIGINT", async () => {
+      await unregister(prefix, name);
+      proc.kill();
+      process.exit(0);
+    });
+    process.on("SIGTERM", async () => {
+      await unregister(prefix, name);
+      proc.kill();
+      process.exit(0);
+    });
   }
   const code = await proc.exited;
+  if (opts.log) {
+    const { unregister } = await import("./monitor");
+    await unregister(prefix, name);
+  }
   process.exit(code);
 }
 
@@ -155,6 +227,41 @@ async function runAll(script: string, pm: PackageManager, opts: RunOpts = {}) {
 
   log.step(`Running '${script}' on ${targets.length} app(s) in parallel...`);
 
+  // --watch: detached background mode, return immediately
+  if (opts.watch) {
+    for (const t of targets) {
+      const args = runArgs(pm, script);
+      const fileEnv = await loadEnv(t.dir);
+      log.info(`starting ${kindLabel(t.kind)}/${t.name} (watch): ${pm} ${args.join(" ")}`);
+      await ensureLogsDir();
+      const logPath = pathJoin(LOGS_DIR, `${t.prefix}-${t.name}.log`);
+      const proc = spawnWatched([pm, ...args], t.dir, logPath, { ...mergeEnv(fileEnv), FORCE_COLOR: "1" });
+
+      let port: number | undefined;
+      try {
+        const m = JSON.stringify(args).match(/--port\s+(\d+)/);
+        if (m) port = parseInt(m[1], 10);
+        else if (fileEnv.PORT) port = parseInt(fileEnv.PORT, 10);
+        else if (process.env.PORT) port = parseInt(process.env.PORT, 10);
+      } catch {}
+
+      try {
+        const { register } = await import("./monitor");
+        await register({
+          prefix: t.prefix, name: t.name, pid: proc.pid,
+          logFile: logPath, port, script,
+          startedAt: new Date().toISOString(),
+          cwd: t.dir,
+        });
+      } catch {}
+    }
+    log.ok(`watching ${targets.length} app(s) in background`);
+    log.info(`  list:   mx monitor ls`);
+    log.info(`  tail:   mx monitor tail -f`);
+    log.info(`  stop:   mx stop all`);
+    return;
+  }
+
   const procs = await Promise.all(
     targets.map(async (t) => {
       const args = runArgs(pm, script);
@@ -163,40 +270,77 @@ async function runAll(script: string, pm: PackageManager, opts: RunOpts = {}) {
       if (opts.log) await ensureLogsDir();
       const proc = Bun.spawn([pm, ...args], {
         cwd: t.dir,
-        stdio: ["inherit", "inherit", "inherit"],
+        stdio: ["inherit", "pipe", "pipe"],
         env: { ...mergeEnv(fileEnv), FORCE_COLOR: "1" },
       });
+      // Always prefix output with [prefix:name] for clarity, color per app name
+      const tag = appTag(t.prefix, t.name);
+
+      let logWriter: ReturnType<typeof createWriteStream> | null = null;
+      let logPath = "";
       if (opts.log) {
         await ensureLogsDir();
-        const logPath = pathJoin(LOGS_DIR, `${t.prefix}-${t.name}.log`);
-        const writer = createWriteStream(logPath, { flags: "a" });
-        const tag = `[${t.prefix}:${t.name}]`;
-        const tee = (src: ReadableStream<Uint8Array> | undefined) => {
-          if (!src) return;
-          const decoder = new TextDecoder();
-          const pump = async () => {
-            const reader = src.getReader();
-            try {
-              while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                if (value) {
-                  const text = decoder.decode(value, { stream: true });
-                  writer.write(`${new Date().toISOString()} ${tag} ${text}`);
-                }
-              }
-            } catch {}
-          };
-          pump();
-        };
-        tee(proc.stdout);
-        tee(proc.stderr);
+        logPath = pathJoin(LOGS_DIR, `${t.prefix}-${t.name}.log`);
+        logWriter = createWriteStream(logPath, { flags: "a" });
       }
-      return { ...t, proc };
+      const logTag = `[${t.prefix}:${t.name}]`;
+
+      // Each stream gets ONE pump that handles terminal prefix + optional log write.
+      pipeStream(proc.stdout, tag, logWriter, logTag);
+      pipeStream(proc.stderr, tag, logWriter, logTag);
+
+      // Register in monitor registry so `mx monitor ls/tail` knows about this app
+      if (opts.log && logPath) {
+        try {
+          const { register } = await import("./monitor");
+          let port: number | undefined;
+          const m = JSON.stringify(args).match(/--port\s+(\d+)/);
+          if (m) port = parseInt(m[1], 10);
+          else if (fileEnv.PORT) port = parseInt(fileEnv.PORT, 10);
+          else if (process.env.PORT) port = parseInt(process.env.PORT, 10);
+          await register({
+            prefix: t.prefix,
+            name: t.name,
+            pid: proc.pid,
+            logFile: logPath,
+            port,
+            script,
+            startedAt: new Date().toISOString(),
+            cwd: t.dir,
+          });
+        } catch (e: any) {
+          log.warn(`could not register ${t.prefix}:${t.name} in monitor: ${e.message}`);
+        }
+      }
+
+      return { ...t, proc, logPath };
     })
   );
 
+  // Cleanup registry on parent exit
+  if (opts.log) {
+    const cleanup = async () => {
+      const { unregister } = await import("./monitor");
+      for (const p of procs) {
+        try { await unregister(p.prefix, p.name); } catch {}
+      }
+    };
+    process.on("SIGINT", () => { cleanup().finally(() => process.exit(0)); });
+    process.on("SIGTERM", () => { cleanup().finally(() => process.exit(0)); });
+  }
+
   const codes = await Promise.all(procs.map((p) => p.proc.exited));
+
+  // All processes exited — unregister all
+  if (opts.log) {
+    try {
+      const { unregister } = await import("./monitor");
+      for (const p of procs) {
+        await unregister(p.prefix, p.name);
+      }
+    } catch {}
+  }
+
   const failed = procs.filter((_, i) => codes[i] !== 0);
 
   if (failed.length > 0) {
@@ -205,4 +349,75 @@ async function runAll(script: string, pm: PackageManager, opts: RunOpts = {}) {
     process.exit(1);
   }
   log.ok("All apps finished cleanly.");
+}
+
+/**
+ * Stream reader: line-buffer child stdout/stderr.
+ * - Each complete line gets `tag` prefix when written to terminal.
+ * - If `logWriter` is provided, raw bytes (with logTag + timestamp) are also written there.
+ * - Preserves ANSI escape codes from child process.
+ */
+function pipeStream(
+  src: ReadableStream<Uint8Array> | undefined,
+  tag: string,
+  logWriter: ReturnType<typeof createWriteStream> | null,
+  logTag: string,
+) {
+  if (!src) return;
+  const decoder = new TextDecoder();
+  const reader = src.getReader();
+  let buffer = "";
+  const flushLine = (line: string) => {
+    if (line.length === 0) {
+      process.stdout.write(`${tag} \n`);
+    } else {
+      process.stdout.write(`${tag} ${line}\n`);
+    }
+  };
+  (async () => {
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          if (buffer.length > 0) {
+            flushLine(buffer);
+            if (logWriter) logWriter.write(`${new Date().toISOString()} ${logTag} ${buffer}\n`);
+            buffer = "";
+          }
+          break;
+        }
+        if (!value) continue;
+        const text = decoder.decode(value, { stream: true });
+        if (logWriter) logWriter.write(`${new Date().toISOString()} ${logTag} ${text}`);
+        buffer += text;
+        let idx;
+        while ((idx = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, idx).replace(/\r$/, "");
+          buffer = buffer.slice(idx + 1);
+          flushLine(line);
+        }
+      }
+    } catch {}
+  })();
+}
+
+/**
+ * Spawn a child process in detached mode (--watch).
+ * - stdout/stderr go to log file only (terminal not streamed)
+ * - process keeps running after parent CLI exits
+ * - returns the spawned proc for monitoring/unref
+ */
+function spawnWatched(argv: string[], cwd: string, logPath: string, env: NodeJS.ProcessEnv) {
+  const { spawn } = require("node:child_process") as typeof import("node:child_process");
+  const out = require("node:fs").openSync(logPath, "a");
+  const err = require("node:fs").openSync(logPath, "a");
+  const proc = spawn(argv[0]!, argv.slice(1), {
+    cwd,
+    env,
+    detached: true,
+    stdio: ["ignore", out, err],
+    windowsHide: true,
+  });
+  proc.unref();
+  return proc as unknown as { pid: number };
 }
