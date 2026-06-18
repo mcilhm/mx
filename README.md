@@ -6,87 +6,144 @@ A monorepo CLI that scaffolds and runs **backend (Bun workspaces)** + **frontend
 
 ```
 root/
-├── backend/
-│   ├── package.json        # Bun workspaces
-│   ├── README.md
-│   └── apps/
-│       ├── api             # be-api
-│       └── worker          # be-worker
-└── frontend/
-    ├── package.json        # Turborepo root
-    ├── turbo.json
-    ├── README.md
-    └── apps/
-        ├── web             # fe-web
-        └── admin           # fe-admin
+├── backend/                    Bun workspaces
+│   ├── packages/<shared>       (optional, mx pkg:add)
+│   └── apps/<name>/
+└── frontend/                   Turborepo
+    ├── packages/<shared>
+    └── apps/<name>/
 ```
 
 ## Install (global)
 
 ```bash
-bun install      # install commander + types
+bun install      # commander + types
 bun link         # registers `mx` globally
 ```
 
-Binary lives at `~/.bun/bin/mx` (Windows: `C:\Users\<you>\.bun\bin\mx.exe`).
+Binary lives at `~/.bun/bin/mx`.
 
-## Usage
+## Commands
 
-### Initialize
+| Command | Purpose |
+|---|---|
+| `mx init` | Scaffold monorepo (prompts: PM + scope) |
+| `mx add:be <n>` / `mx add:fe <n>` | Scaffold new app |
+| `mx add <n>` | Interactive kind prompt |
+| `mx remove <be\|fe> <n>` | Delete app (re-links workspace) |
+| `mx rename <be\|fe> <old> <new>` | Rename app + package.json |
+| `mx pkg:add <be\|fe> <n>` | Create shared package |
+| `mx link <be\|fe> <app> <pkg>` | Add workspace dep to app |
+| `mx list` / `mx list --json` | List all apps |
+| `mx doctor` | Health checks |
+| `mx run <be\|fe\|all> <name> <script>` | Run script |
+| `mx exec <be\|fe> <n> -- <cmd>` | Run arbitrary command inside app |
+| `mx format` | Prettier/biome across all apps |
+| `mx typecheck` | tsc --noEmit across all apps (parallel) |
+| `mx audit` | CVE scan via package manager |
+| `mx outdated` | Check for outdated deps |
+| `mx stats` | Apps, LOC, deps, disk usage, last commit |
+| `mx graph` | Dependency graph (ASCII or DOT) |
+| `mx logs <be\|fe> <name>` | Tail app log (no pm2 needed) |
+| `mx shell <be\|fe> <name>` | Drop to shell in app folder |
+| `mx envdiff <be\|fe> <a> <b>` | Compare env keys between two apps |
+| `mx clean` / `mx fresh` | Remove build artifacts / clean + reinstall |
+| `mx setup --husky` | Install husky + lint-staged git hooks |
+
+## Initialize
 
 ```bash
-mx init                  # interactive: choose package manager
-mx init --pm bun         # non-interactive: bun | pnpm | yarn | npm
+mx init                                    # interactive
+mx init --pm bun --scope all               # full monorepo with bun
+mx init --pm pnpm --scope backend          # backend-only
+mx init --pm bun  --scope frontend         # frontend-only
 ```
 
-The CLI will ask which package manager to use (or use `--pm` to skip the prompt). It writes the choice to `.mx/config.json` so `mx add:*` and `mx run` always use the same PM.
+Flags:
+- `--pm <bun|pnpm|yarn|npm>` — package manager
+- `--scope <backend|frontend|all>` — what to scaffold
 
-Creates `backend/` (workspaces) + `frontend/` (Turborepo) with their own root `package.json` configured for your chosen PM, plus an umbrella `package.json` at the repo root.
+**Auto-install:** after scaffolding, `mx init` runs `<pm> install` automatically for the root, `backend/`, and `frontend/`. Re-runs are safe — if `node_modules` already exists, the step is skipped.
 
-### Add apps
+Persisted to `.mx/config.json`.
+
+## Add apps
 
 ```bash
-mx add:be <name>    # Bun + Elysia backend
-mx add:fe <name>    # Next.js 14 frontend
+mx add:be api                              # default: no DB, port 3001
+mx add:be api --db postgres --with-auth    # postgres + auth module
+mx add:be api --port 4000 --no-cors
+mx add:fe web                              # Next.js, port auto (3000, 3001, ...)
+mx add:fe web --port 3100
+mx add api                                 # interactive (prompts kind)
 ```
 
-- Each app is named `be-<name>` / `fe-<name>`.
-- Each app gets a `.env.example`.
-- BE default port `3001`; FE ports auto-increment from `3000`.
-- After scaffolding, the corresponding root workspace install runs (`cd backend && bun install` or `cd frontend && bun install`).
+BE template includes `zod`-validated `src/env.ts` that auto-loads `.env` and fails fast on missing/invalid vars.
 
-### Per-workspace commands
-
-After `mx init` you can also drive each side natively:
+## Shared packages
 
 ```bash
-cd backend  && bun install && bun run dev     # Bun workspaces filter
-cd frontend && bun install && bun run dev     # turbo run dev
+mx pkg:add be types                        # creates backend/packages/types
+mx link be api types                       # adds be-types to backend/apps/api deps
 ```
 
-### List apps
+Import in app code: `import { PACKAGE_NAME } from "be-types";`
+
+## Run / exec
 
 ```bash
-mx list            # pretty table
-mx list --json     # JSON
-```
-
-Shows kind, path, name, port, `.env` presence, scripts.
-
-### Run apps
-
-```bash
-mx run be api dev        # single backend
-mx run fe web dev        # single frontend
-mx run all dev           # run ALL backend + frontend apps in parallel
+mx run be api dev                  # run a script in one app
+mx run all dev                     # parallel across all apps
 mx run all build
+
+mx exec be api -- bun test         # arbitrary command (or script name)
+mx exec be api -- lint             # invokes `bun run lint` if defined in pkg
 ```
 
-### Env files
+## Quality
 
-Each app can have `.env` / `.env.local`. `mx run` auto-loads them; existing `process.env` values win.
+```bash
+mx doctor                          # PM, lockfile, ports, scripts, orphans
+mx format                          # prettier/biome across all apps
+mx typecheck                       # tsc --noEmit in parallel
+mx audit                           # CVE scan via bun/pnpm/yarn/npm audit
+mx outdated                        # check for newer dep versions
+mx setup --husky                   # husky + lint-staged
+```
 
-## Updating
+## Observability
+
+```bash
+mx stats                           # apps count, LOC, deps count, disk, last commit
+mx graph                           # dep graph as ASCII
+mx graph --dot > deps.dot          # Graphviz DOT format
+mx envdiff be api worker           # compare env keys between two apps
+```
+
+## Logs (no pm2)
+
+Start an app with `--log` to capture output to `.mx/logs/<prefix>-<name>.log`:
+
+```bash
+mx run be api dev --log            # writes to .mx/logs/be-api.log
+mx run all dev --log               # one log per app
+mx logs                            # list all log files
+mx logs be api -n 200              # show last 200 lines
+mx logs be api -f                  # tail -f the log
+```
+
+## Maintenance
+
+```bash
+mx clean                           # remove node_modules, dist, .next, .turbo
+mx clean --dry                     # preview what would be removed
+mx clean backend                   # only backend
+mx fresh                           # clean + reinstall all
+mx fresh frontend                  # clean + reinstall frontend only
+mx shell be api                    # open cmd.exe/sh inside backend/apps/api
+```
+
+## Updating the CLI
 
 ```bash
 bun install

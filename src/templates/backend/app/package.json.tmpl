@@ -6,12 +6,14 @@
   "scripts": {
     "dev": "bun run --hot src/index.ts",
     "start": "bun run src/index.ts",
-    "build": "bun build src/index.ts --target=bun --outdir=dist"
+    "build": "bun build src/index.ts --target=bun --outdir=dist",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "elysia": "latest",
     "@elysiajs/cors": "latest",
-    "@elysiajs/swagger": "latest"
+    "@elysiajs/swagger": "latest",
+    "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/bun": "latest",

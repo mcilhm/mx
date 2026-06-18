@@ -87,6 +87,20 @@ export function isValidPm(p: string): p is PackageManager {
   return (VALID_PM as string[]).includes(p);
 }
 
+export type Scope = "backend" | "frontend" | "all";
+
+const VALID_SCOPE: Scope[] = ["backend", "frontend", "all"];
+
+export function isValidScope(s: string): s is Scope {
+  return (VALID_SCOPE as string[]).includes(s);
+}
+
+export const SCOPE_OPTIONS = [
+  { value: "all", label: "all", description: "backend + frontend (Recommended)" },
+  { value: "backend", label: "backend", description: "only backend/ + apps/* (Bun workspaces)" },
+  { value: "frontend", label: "frontend", description: "only frontend/ + apps/* (Turborepo)" },
+];
+
 export async function promptChoice(
   question: string,
   options: { value: string; label: string; description?: string }[],
@@ -162,4 +176,17 @@ export function pmRunArgs(pm: PackageManager, script: string): string[] {
   if (pm === "pnpm") return ["run", script];
   if (pm === "yarn") return [script];
   return ["run", script];
+}
+
+const CONFIG_PATH_DEFAULT = pathJoin(ROOT, ".mx/config.json");
+
+export async function loadPm(): Promise<PackageManager> {
+  if (exists(CONFIG_PATH_DEFAULT)) {
+    try {
+      const { readFile } = await import("node:fs/promises");
+      const cfg = JSON.parse(await readFile(CONFIG_PATH_DEFAULT, "utf8"));
+      if (isValidPm(cfg.packageManager)) return cfg.packageManager;
+    } catch {}
+  }
+  return detectPkgManager();
 }

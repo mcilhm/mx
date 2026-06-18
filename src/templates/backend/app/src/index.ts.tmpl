@@ -1,8 +1,7 @@
 import { Elysia } from "elysia";
 import { cors } from "@elysiajs/cors";
 import { swagger } from "@elysiajs/swagger";
-
-const PORT = process.env.PORT ?? 3001;
+import { env } from "./env";
 
 const app = new Elysia()
   .use(cors())
@@ -12,7 +11,12 @@ const app = new Elysia()
     message: "Bun + Elysia backend",
     docs: "/swagger",
   }))
-  .get("/health", () => ({ status: "ok", uptime: process.uptime() }))
-  .listen(PORT);
+  .get("/health", () => ({ status: "ok", uptime: process.uptime(), ts: Date.now() }))
+__WITH_AUTH_BLOCK__
+  .group("/auth", (a) =>
+    a.post("/login", ({ body }) => ({ token: "demo", user: body })).post("/logout", () => ({ ok: true }))
+  )
+__END__
+  .listen(env.PORT);
 
 console.log(`🚀 __APP_NAME__ running at ${app.server?.hostname}:${app.server?.port}`);

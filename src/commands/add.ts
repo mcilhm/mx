@@ -45,6 +45,18 @@ async function renderTemplate(srcDir: string, destDir: string, vars: Record<stri
     for (const [k, v] of Object.entries(vars)) {
       content = content.replaceAll(`__${k}__`, v);
     }
+    // Conditional blocks: __WITH_X_BLOCK__ ... __END__ -> block or ""
+    content = content.replace(/__WITH_AUTH_BLOCK__([\s\S]*?)__END__/g, (_m, block) =>
+      vars.WITH_AUTH === "true" ? block : ""
+    );
+    // DB block
+    if (vars.DB && vars.DB !== "none") {
+      content = content.replace(/__DB_BLOCK__([\s\S]*?)__END__/g, (_m, block) =>
+        block.replaceAll("__DB_KIND__", vars.DB)
+      );
+    } else {
+      content = content.replace(/__DB_BLOCK__([\s\S]*?)__END__/g, "");
+    }
     await writeFile(destPath, content);
   }
 }
@@ -80,21 +92,28 @@ function suggestPort(kind: AppKind, existing: number[]): number {
   return port;
 }
 
-export async function addBe(name: string) {
-  return addApp("backend", "be", name);
+export async function addBe(name: string, opts: AddOptions = {}) {
+  return addApp("backend", "be", name, opts);
 }
 
-export async function addFe(name: string) {
-  return addApp("frontend", "fe", name);
+export async function addFe(name: string, opts: AddOptions = {}) {
+  return addApp("frontend", "fe", name, opts);
 }
 
-async function addApp(kind: AppKind, prefix: "be" | "fe", name: string) {
+export interface AddOptions {
+  port?: number | string;
+  db?: "postgres" | "mysql" | "sqlite" | "mongo" | "none";
+  withAuth?: boolean;
+  withCors?: boolean;
+}
+
+async function addApp(kind: AppKind, prefix: "be" | "fe", name: string, opts: AddOptions) {
   const kindLabel = prefix.toUpperCase();
   log.step(`Scaffolding ${kindLabel} app: ${name} (in ${KIND_APPS_DIR[kind]})`);
 
   const rootDir = pathJoin(ROOT, KIND_DIR[kind]);
   if (!exists(rootDir) || !exists(pathJoin(rootDir, "package.json"))) {
-    log.err(`${KIND_DIR[kind]}/ is not initialized. Run: mx init`);
+    log.err(`${KIND_DIR[kind]}/ is not initialized. Run: mx init --scope ${kind}`);
     process.exit(1);
   }
 
@@ -112,32 +131,55 @@ async function addApp(kind: AppKind, prefix: "be" | "fe", name: string) {
 
   let vars: Record<string, string> = { APP_NAME: name };
   if (kind === "frontend") {
-    vars.PORT = String(suggestPort(kind, usedPort(kind)));
+    vars.PORT = String(opts.port ?? suggestPort(kind, usedPort(kind)));
+  } else if (opts.port !== undefined) {
+    vars.PORT = String(opts.port);
+  } else {
+    vars.PORT = "3001";
   }
+  vars.DB = opts.db ?? "none";
+  vars.WITH_AUTH = String(Boolean(opts.withAuth));
+  vars.WITH_CORS = String(opts.withCors !== false); // default true
 
   await renderTemplate(tpl, dest, vars);
 
   log.ok(`created: ${KIND_APPS_DIR[kind]}/${name}` + (vars.PORT ? ` (port ${vars.PORT})` : ""));
+  if (opts.db && opts.db !== "none") log.info(`with database: ${opts.db}`);
+  if (opts.withAuth) log.info("with auth module");
+
   log.info("Writing .env.example...");
-  await fsWriteFile(pathJoin(dest, ".env.example"), envExample(kind, vars.PORT), "utf8");
+  await fsWriteFile(pathJoin(dest, ".env.example"), envExample(kind, vars.PORT, opts.db), "utf8");
 
   await installKindRoot(kind);
 
   log.ok(`Done. Try: mx run ${prefix} ${name} dev`);
 }
 
-function envExample(kind: AppKind, port?: string): string {
+function envExample(kind: AppKind, port?: string, db?: string): string {
   if (kind === "backend") {
-    return `# copy to .env (loaded automatically by \`mx run\`)
-PORT=3001
-DATABASE_URL=
-API_KEY=
-`;
+    const lines = [
+      `# copy to .env (loaded automatically by \`mx run\`)`,
+      `PORT=${port ?? 3001}`,
+    ];
+    if (db && db !== "none") {
+      const urls: Record<string, string> = {
+        postgres: "postgres://user:pass@localhost:5432/db",
+        mysql: "mysql://user:pass@localhost:3306/db",
+        sqlite: "file:./data.db",
+        mongo: "mongodb://localhost:27017/db",
+      };
+      lines.push(`DATABASE_URL=${urls[db] ?? ""}`);
+    } else {
+      lines.push(`# DATABASE_URL=`);
+    }
+    lines.push(`API_KEY=`);
+    return lines.join("\n") + "\n";
   }
-  return `# copy to .env (loaded automatically by \`mx run\`)
-NEXT_PUBLIC_API_URL=http://localhost:3001
-PORT=${port ?? 3000}
-`;
+  return [
+    `# copy to .env (loaded automatically by \`mx run\`)`,
+    `NEXT_PUBLIC_API_URL=http://localhost:${port ?? 3001}`,
+    `PORT=${port ?? 3000}`,
+  ].join("\n") + "\n";
 }
 
 async function installKindRoot(kind: AppKind) {

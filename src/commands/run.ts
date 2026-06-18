@@ -7,22 +7,21 @@ import {
   KIND_APPS_DIR,
   kindLabel,
   PackageManager,
-  detectPkgManager,
-  isValidPm,
+  ensureDir,
+  loadPm,
   pmRunArgs,
 } from "../utils";
 import { readdir, readFile } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
 
-const CONFIG_PATH = pathJoin(ROOT, ".mx/config.json");
+const LOGS_DIR = pathJoin(ROOT, ".mx/logs");
 
-async function loadPm(): Promise<PackageManager> {
-  if (exists(CONFIG_PATH)) {
-    try {
-      const cfg = JSON.parse(await readFile(CONFIG_PATH, "utf8"));
-      if (isValidPm(cfg.packageManager)) return cfg.packageManager;
-    } catch {}
-  }
-  return detectPkgManager();
+export interface RunOpts {
+  log?: boolean;
+}
+
+async function ensureLogsDir() {
+  await ensureDir(LOGS_DIR);
 }
 
 function appKind(prefix: "be" | "fe"): AppKind {
@@ -66,11 +65,11 @@ function mergeEnv(fileEnv: Record<string, string>): NodeJS.ProcessEnv {
   return { ...fileEnv, ...process.env } as NodeJS.ProcessEnv;
 }
 
-export async function run(kind: Kind, name: string, script: string) {
+export async function run(kind: Kind, name: string, script: string, opts: RunOpts = {}) {
   const pm = await loadPm();
 
   if (kind === "all") {
-    return runAll(script, pm);
+    return runAll(script, pm, opts);
   }
 
   const prefix: "be" | "fe" = kind;
@@ -85,17 +84,51 @@ export async function run(kind: Kind, name: string, script: string) {
   }
 
   const fileEnv = await loadEnv(dir);
-  log.info(`$ ${pm} ${runArgs(pm, script).join(" ")}  (in ${KIND_APPS_DIR[appKind(prefix)]}/${name})`);
-  const proc = Bun.spawn([pm, ...runArgs(pm, script)], {
+  const args = runArgs(pm, script);
+  log.info(`$ ${pm} ${args.join(" ")}  (in ${KIND_APPS_DIR[appKind(prefix)]}/${name})`);
+  if (opts.log) {
+    await ensureLogsDir();
+    const logPath = pathJoin(LOGS_DIR, `${prefix}-${name}.log`);
+    log.info(`logging to ${logPath} (use \`mx logs ${prefix} ${name} -f\` to tail)`);
+  }
+  const stdout = opts.log ? ["inherit", "pipe", "pipe"] as const : ["inherit", "inherit", "inherit"] as const;
+  const proc = Bun.spawn([pm, ...args], {
     cwd: dir,
-    stdio: ["inherit", "inherit", "inherit"],
+    stdio: stdout,
     env: { ...mergeEnv(fileEnv), FORCE_COLOR: "1" },
   });
+  if (opts.log) {
+    await ensureLogsDir();
+    const logPath = pathJoin(LOGS_DIR, `${prefix}-${name}.log`);
+    const writer = createWriteStream(logPath, { flags: "a" });
+    const tag = `[${prefix}:${name}]`;
+    const tee = (src: ReadableStream<Uint8Array> | undefined) => {
+      if (!src) return;
+      const decoder = new TextDecoder();
+      const pump = async () => {
+        const reader = src.getReader();
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            if (value) {
+              const text = decoder.decode(value, { stream: true });
+              process.stdout.write(text);
+              writer.write(`${new Date().toISOString()} ${tag} ${text}`);
+            }
+          }
+        } catch {}
+      };
+      pump();
+    };
+    tee(proc.stdout);
+    tee(proc.stderr);
+  }
   const code = await proc.exited;
   process.exit(code);
 }
 
-async function runAll(script: string, pm: PackageManager) {
+async function runAll(script: string, pm: PackageManager, opts: RunOpts = {}) {
   const dirs: { prefix: "be" | "fe"; kind: AppKind }[] = [
     { prefix: "be", kind: "backend" },
     { prefix: "fe", kind: "frontend" },
@@ -127,14 +160,39 @@ async function runAll(script: string, pm: PackageManager) {
       const args = runArgs(pm, script);
       const fileEnv = await loadEnv(t.dir);
       log.info(`starting ${kindLabel(t.kind)}/${t.name}: ${pm} ${args.join(" ")}`);
-      return {
-        ...t,
-        proc: Bun.spawn([pm, ...args], {
-          cwd: t.dir,
-          stdio: ["inherit", "inherit", "inherit"],
-          env: { ...mergeEnv(fileEnv), FORCE_COLOR: "1" },
-        }),
-      };
+      if (opts.log) await ensureLogsDir();
+      const proc = Bun.spawn([pm, ...args], {
+        cwd: t.dir,
+        stdio: ["inherit", "inherit", "inherit"],
+        env: { ...mergeEnv(fileEnv), FORCE_COLOR: "1" },
+      });
+      if (opts.log) {
+        await ensureLogsDir();
+        const logPath = pathJoin(LOGS_DIR, `${t.prefix}-${t.name}.log`);
+        const writer = createWriteStream(logPath, { flags: "a" });
+        const tag = `[${t.prefix}:${t.name}]`;
+        const tee = (src: ReadableStream<Uint8Array> | undefined) => {
+          if (!src) return;
+          const decoder = new TextDecoder();
+          const pump = async () => {
+            const reader = src.getReader();
+            try {
+              while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                if (value) {
+                  const text = decoder.decode(value, { stream: true });
+                  writer.write(`${new Date().toISOString()} ${tag} ${text}`);
+                }
+              }
+            } catch {}
+          };
+          pump();
+        };
+        tee(proc.stdout);
+        tee(proc.stderr);
+      }
+      return { ...t, proc };
     })
   );
 

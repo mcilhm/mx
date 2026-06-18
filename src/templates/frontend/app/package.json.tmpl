@@ -6,7 +6,9 @@
     "dev": "next dev --port __PORT__",
     "build": "next build",
     "start": "next start --port __PORT__",
-    "lint": "next lint"
+    "lint": "next lint",
+    "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "next": "14.2.5",
@@ -17,6 +19,7 @@
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
-    "typescript": "^5"
+    "typescript": "^5",
+    "prettier": "^3.3.0"
   }
 }
