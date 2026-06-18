@@ -1,0 +1,29 @@
+# Frontend Monorepo (Turborepo)
+
+Turborepo with `apps/*` workspaces (powered by `__PM__`).
+
+```
+frontend/
+├── turbo.json
+├── package.json
+└── apps/
+    └── <name>/
+```
+
+## Scripts (run from `frontend/`)
+
+```bash
+__PM__ install
+__PM__ run dev      # turbo run dev  (all apps in parallel)
+__PM__ run build    # turbo run build
+__PM__ run lint
+__PM__ run start
+```
+
+Or use the root CLI:
+
+```bash
+mx add:fe <name>
+mx run fe <name> dev
+mx run all dev   # backend + frontend together
+```

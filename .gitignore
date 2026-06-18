@@ -1,0 +1,5 @@
+node_modules/
+.bun/
+.mx/cache/
+*.log
+.DS_Store

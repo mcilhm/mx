@@ -1,0 +1,27 @@
+# Backend Monorepo
+
+`__PM__` workspaces with `apps/*`.
+
+```
+backend/
+├── package.json
+└── apps/
+    └── <name>/
+```
+
+## Scripts (run from `backend/`)
+
+```bash
+__PM__ install
+__PM__ run dev      # runs every app's dev script
+__PM__ run build
+__PM__ run start
+```
+
+Or use the root CLI:
+
+```bash
+mx add:be <name>
+mx run be <name> dev
+mx run all dev
+```
